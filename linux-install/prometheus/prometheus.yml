@@ -1,0 +1,103 @@
+# ============================================================================
+# Gauge - Prometheus config for the CENTRAL WINDOWS box, scraping the Linux fleet:
+#   IS   : 2x ESB hosts + 2x BPM hosts   (roles esb / bpm)
+#   UM   : 4x realm hosts
+# Prometheus + Grafana + Loki run here on Windows; this Prometheus reaches OUT to
+# each Linux host's exporter ports.
+#
+#   >>> The Linux ports (9100 / 9099 / 5555 / 9200) must be reachable FROM this
+#       Windows box (open them in the Linux firewall / security group). <<<
+#
+# Replace the *.example.local hostnames with your real ones. Labels:
+#   host  = friendly per-host name (dashboards group/filter on it)
+#   role  = esb | bpm | um       (compare the two IS tiers)
+# Metric families: IS -> sag_is_* (native) or jvm_* (JMX) · UM -> sag_um_* ·
+# host -> node_* (node_exporter).
+# ============================================================================
+
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    monitor: gauge-linux
+
+rule_files:
+  - rules/*.rules.yml
+
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['localhost:9093']
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # --- Linux host metrics (node_exporter on every host) --------------------
+  - job_name: node
+    static_configs:
+      - targets: ['esb1.example.local:9100']
+        labels: { host: 'esb1', role: 'esb' }
+      - targets: ['esb2.example.local:9100']
+        labels: { host: 'esb2', role: 'esb' }
+      - targets: ['bpm1.example.local:9100']
+        labels: { host: 'bpm1', role: 'bpm' }
+      - targets: ['bpm2.example.local:9100']
+        labels: { host: 'bpm2', role: 'bpm' }
+      - targets: ['um1.example.local:9100']
+        labels: { host: 'um1', role: 'um' }
+      - targets: ['um2.example.local:9100']
+        labels: { host: 'um2', role: 'um' }
+      - targets: ['um3.example.local:9100']
+        labels: { host: 'um3', role: 'um' }
+      - targets: ['um4.example.local:9100']
+        labels: { host: 'um4', role: 'um' }
+
+  # --- Integration Server: 2x ESB + 2x BPM ---------------------------------
+  # OPTION A (ACTIVE) native sag_is_* on :5555 - MSR licence + endpoint enabled
+  #   (SAG_IS_METRICS_ENDPOINT_ACL=Anonymous, then drop basic_auth; or add
+  #   wm.server.query:getPrometheusStats to the :5555 allow list).
+  #   is_instance is unique per host (distinct legends); role=esb|bpm slices tiers.
+  #   Dashboard: "Gauge - Integration Server (native sag_is_*)".
+  - job_name: is
+    metrics_path: /metrics
+    basic_auth:
+      username: Administrator
+      password: CHANGEME          # IS Administrator password (omit if ACL=Anonymous)
+    static_configs:
+      - targets: ['esb1.example.local:5555']
+        labels: { is_instance: 'esb1', host: 'esb1', role: 'esb', wm_metric_source: 'is_native_prometheus' }
+      - targets: ['esb2.example.local:5555']
+        labels: { is_instance: 'esb2', host: 'esb2', role: 'esb', wm_metric_source: 'is_native_prometheus' }
+      - targets: ['bpm1.example.local:5555']
+        labels: { is_instance: 'bpm1', host: 'bpm1', role: 'bpm', wm_metric_source: 'is_native_prometheus' }
+      - targets: ['bpm2.example.local:5555']
+        labels: { is_instance: 'bpm2', host: 'bpm2', role: 'bpm', wm_metric_source: 'is_native_prometheus' }
+
+  # OPTION B (alternative) JMX exporter jvm_* on :9099 (any licence). Comment out
+  # the `is` job above and uncomment this (same 4 hosts, port 9099).
+  # - job_name: is
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ['esb1.example.local:9099']
+  #       labels: { is_instance: 'esb1', host: 'esb1', role: 'esb', wm_metric_source: 'is_jmx_exporter' }
+  #     - targets: ['esb2.example.local:9099']
+  #       labels: { is_instance: 'esb2', host: 'esb2', role: 'esb', wm_metric_source: 'is_jmx_exporter' }
+  #     - targets: ['bpm1.example.local:9099']
+  #       labels: { is_instance: 'bpm1', host: 'bpm1', role: 'bpm', wm_metric_source: 'is_jmx_exporter' }
+  #     - targets: ['bpm2.example.local:9099']
+  #       labels: { is_instance: 'bpm2', host: 'bpm2', role: 'bpm', wm_metric_source: 'is_jmx_exporter' }
+
+  # --- Universal Messaging: 4 realm hosts ----------------------------------
+  - job_name: um
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['um1.example.local:9200']
+        labels: { host: 'um1', component: 'universal-messaging' }
+      - targets: ['um2.example.local:9200']
+        labels: { host: 'um2', component: 'universal-messaging' }
+      - targets: ['um3.example.local:9200']
+        labels: { host: 'um3', component: 'universal-messaging' }
+      - targets: ['um4.example.local:9200']
+        labels: { host: 'um4', component: 'universal-messaging' }

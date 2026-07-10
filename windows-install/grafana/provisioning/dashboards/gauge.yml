@@ -1,0 +1,18 @@
+# Grafana dashboard provisioning - copy to <Grafana>\conf\provisioning\dashboards\
+# Auto-imports every *.json under the path below into a "Gauge" folder.
+#
+# IMPORTANT: set `path` to the ABSOLUTE Windows path where you put the dashboard
+# JSON files from windows-install\grafana\dashboards\, e.g. C:\gauge\dashboards
+apiVersion: 1
+
+providers:
+  - name: gauge
+    orgId: 1
+    folder: 'Gauge'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30   # rescans every 30s; JSON edits are picked up
+    allowUiUpdates: true
+    options:
+      path: C:\gauge\dashboards
+      foldersFromFilesStructure: false

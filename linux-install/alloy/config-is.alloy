@@ -1,0 +1,55 @@
+// ============================================================================
+// Grafana Alloy - IS Linux host -> Loki on the central Windows box.
+// Runs on EACH of the 4 IS hosts (esb1, esb2, bpm1, bpm2).
+//
+// PER HOST, edit:
+//   (1) loki.write url          -> your Windows box
+//   (2) host / role / is_instance labels -> match prometheus.yml for THIS host
+//       ESB hosts: host=esb1|esb2, role="esb"      BPM hosts: host=bpm1|bpm2, role="bpm"
+//   (3) the log path globs + IS instance dir name
+// Then: sudo systemctl restart alloy
+// ============================================================================
+
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://WINDOWS-HOST:3100/loki/api/v1/push"   // <-- your central Windows box IP/name
+  }
+}
+
+// Integration Server logs (server.log, error.log, session.log, stats.log)
+local.file_match "is" {
+  path_targets = [
+    { __path__ = "/opt/softwareag/IntegrationServer/instances/default/logs/*.log", component = "integration-server", is_instance = "esb1", host = "esb1", role = "esb", logset = "is" },
+  ]
+}
+loki.source.file "is" {
+  targets    = local.file_match.is.targets
+  forward_to = [loki.process.wm.receiver]
+}
+
+// JVM wrapper log (start / OOM / crash / restart)
+local.file_match "wrapper" {
+  path_targets = [
+    { __path__ = "/opt/softwareag/profiles/IS_default/logs/wrapper.log", component = "integration-server", is_instance = "esb1", host = "esb1", role = "esb", logset = "wrapper" },
+  ]
+}
+loki.source.file "wrapper" {
+  targets    = local.file_match.wrapper.targets
+  forward_to = [loki.process.wm.receiver]
+}
+
+// Promote the severity word to a `level` label
+loki.process "wm" {
+  stage.regex {
+    expression = "(?i)(?P<level>FATAL|ERROR|WARN|WARNING|INFO|DEBUG|TRACE)"
+  }
+  stage.labels {
+    values = { level = "" }
+  }
+  forward_to = [loki.write.default.receiver]
+}

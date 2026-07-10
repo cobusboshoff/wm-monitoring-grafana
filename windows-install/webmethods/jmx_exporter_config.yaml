@@ -1,0 +1,42 @@
+# jmx_prometheus_javaagent config for webMethods Integration Server (Windows).
+#
+# Exposes JVM-level MBeans (heap, gc, threads, classes, buffer pools) + a few
+# useful IS-runtime MBeans as Prometheus text. The javaagent's BUILT-IN
+# jvm_*/process_* collectors are independent of the `rules` below and stay on -
+# so even with rules:[] you get the ~40 useful jvm_* series. The rules here add
+# a handful of high-signal webMethods MBeans and drop the ~700 series of
+# framework noise (ehcache/derby/camel/osgi/tanuki) a catch-all would emit.
+#
+# The agent hot-reloads this file on scrape - editing it does NOT need a JVM
+# restart. Ref: https://github.com/prometheus/jmx_exporter
+
+lowercaseOutputName: false
+lowercaseOutputLabelNames: false
+rules:
+  # Package/adapter load health. A non-zero ElementsNotLoaded = a subsystem
+  # (e.g. an adapter's elements) failed to load.
+  - pattern: 'com.softwareag<type=subsystem.*subsystemId=([^,>]+)><>(ElementsLoaded|ElementsNotLoaded)'
+    name: wm_is_subsystem_$2
+    labels:
+      subsystem: "$1"
+    type: GAUGE
+
+  # IS statistics collector - per-component execution count + slowest duration
+  # in the current refresh interval (tabular bean keyed by component Name).
+  - pattern: 'com.softwareag<type=IS StatisticsMetric, Name=([^,>]+)><>(MetricCount|PerformanceMillis)'
+    name: wm_is_statistics_$2
+    labels:
+      component: "$1"
+    type: GAUGE
+
+  # Statistics Data Collector (Lucene index) health - doc counts + index size.
+  - pattern: 'com.softwareag<type=IS Statistics Data Collector><>(AllDocs|DeletedDocs|MergedDocs|IndexDirCount|IndexDirSize)'
+    name: wm_is_stats_collector_$1
+    type: GAUGE
+
+  # JVM uptime (java.lang:type=Runtime Uptime, in milliseconds). Cross-platform
+  # (works on Windows, unlike the Linux-only process_start_time_seconds). The IS
+  # dashboard's "JVM uptime" stat divides this by 1000.
+  - pattern: 'java.lang<type=Runtime><>Uptime'
+    name: jvm_runtime_uptime_millis
+    type: COUNTER

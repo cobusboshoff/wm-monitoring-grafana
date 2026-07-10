@@ -1,0 +1,104 @@
+# ============================================================================
+# Gauge (webMethods observability) - Prometheus config for a NATIVE WINDOWS host
+# ----------------------------------------------------------------------------
+# Scrapes, on the SAME Windows box (localhost):
+#   - Integration Server(s)  via the JMX exporter javaagent  -> jvm_*   :9099
+#   - Universal Messaging    via its native sag_um_* exporter -> sag_um_* :9200
+#   - Windows host           via windows_exporter             -> windows_* :9182
+#   - Prometheus itself.
+#
+# Metric families (what each source produces):
+#   IS   -> jvm_*  (standard IS + JMX exporter = JVM-level: heap, threads, GC,
+#                   classes). NOT sag_is_* (that needs an MSR licence).
+#   UM   -> sag_um_* (native, ships with UM 10.15+).
+#   host -> windows_* (windows_exporter).
+#
+# If you run more than one IS instance, give each JMX agent its own port
+# (9099, 9100, ...) and add a target line below.
+# ============================================================================
+
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    monitor: gauge-windows
+
+# Recording + alerting rules (any *.rules.yml in the rules/ folder auto-loads).
+rule_files:
+  - rules/*.rules.yml
+
+# Optional: route firing alerts to an Alertmanager. Leave commented if you are
+# not running Alertmanager - Prometheus still EVALUATES the alerts and shows
+# them under Status > Rules / Alerts and in Grafana.
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['localhost:9093']
+
+scrape_configs:
+  # --- Prometheus self-monitoring -----------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # --- Integration Server --------------------------------------------------
+  # Pick ONE path for IS - they produce different metric families, so only the
+  # matching dashboard will have data:
+  #
+  #   OPTION A (below, ACTIVE)  native sag_is_*  ->  :5555/metrics
+  #     Lighter touch: NO javaagent / wrapper edit / JVM restart - just enable
+  #     the endpoint. Richer: service-level (invocations, latency, errors,
+  #     sessions, HTTP) not just JVM. REQUIRES an MSR-licensed IS.
+  #     Enable the endpoint (one of):
+  #       - set env  SAG_IS_METRICS_ENDPOINT_ACL=Anonymous  (then drop basic_auth here), or
+  #       - add  wm.server.query:getPrometheusStats  to the port's allow list.
+  #     Dashboard: "Gauge - Integration Server (native sag_is_*)".
+  #
+  #   OPTION B  JMX exporter jvm_*  ->  :9099   (see the commented block lower down)
+  #     Works on ANY IS licence but JVM-level only. Needs the javaagent added via
+  #     webmethods/is-custom_wrapper.conf. Dashboard: "Gauge - Integration Server (JVM)".
+  #
+  # The is_instance label is what the dashboards split on - one per IS instance.
+  - job_name: is
+    metrics_path: /metrics
+    basic_auth:
+      username: Administrator
+      password: CHANGEME          # IS Administrator password (omit if endpoint ACL = Anonymous)
+    static_configs:
+      - targets: ['localhost:5555']
+        labels:
+          is_instance: 'default'
+          wm_metric_source: 'is_native_prometheus'
+      # Add more IS instances here (each on its own IS port):
+      # - targets: ['localhost:5556']
+      #   labels: { is_instance: 'instance2', wm_metric_source: 'is_native_prometheus' }
+
+  # --- OPTION B (alternative): Integration Server via JMX exporter -> jvm_* --
+  # To use JMX instead of native: comment out the `is` job above and uncomment this.
+  # - job_name: is
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ['localhost:9099']
+  #       labels:
+  #         is_instance: 'default'
+  #         wm_metric_source: 'is_jmx_exporter'
+  #     # more instances, each on its own JMX port:
+  #     # - targets: ['localhost:9100']
+  #     #   labels: { is_instance: 'instance2', wm_metric_source: 'is_jmx_exporter' }
+
+  # --- Universal Messaging (native sag_um_* exporter) ----------------------
+  - job_name: um
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['localhost:9200']
+        labels:
+          component: 'universal-messaging'
+
+  # --- Windows host (windows_exporter -> windows_*) ------------------------
+  # scrape_timeout 30s: the service/process collectors can exceed the default
+  # 10s on busy hosts and cause partial/empty scrapes (windows_exporter #2177).
+  - job_name: windows
+    metrics_path: /metrics
+    scrape_timeout: 30s
+    static_configs:
+      - targets: ['localhost:9182']

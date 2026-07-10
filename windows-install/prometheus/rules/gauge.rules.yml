@@ -1,0 +1,143 @@
+# ============================================================================
+# Gauge (Windows) - recording + alerting rules
+# ----------------------------------------------------------------------------
+# Derived signals + alerts for IS (jvm_*), UM (sag_um_*) and the Windows host
+# (windows_* / windows_exporter v0.31.7). Thresholds are starting points -
+# tune to your environment.
+# ============================================================================
+groups:
+  # ------------------------------------------------------------------ #
+  # Recording rules - reusable saturation/health signals               #
+  # ------------------------------------------------------------------ #
+  - name: gauge_recording
+    interval: 30s
+    rules:
+      - record: gauge:is_heap:saturation
+        # Path-agnostic: `or` yields whichever family is actually scraped -
+        # native sag_is_* (Option A) or JMX jvm_* (Option B). Only one is present.
+        expr: |
+          (sag_is_used_memory_bytes{job="is"} / sag_is_max_memory_bytes{job="is"})
+          or
+          (jvm_memory_used_bytes{job="is", area="heap"} / jvm_memory_max_bytes{job="is", area="heap"})
+      - record: gauge:um_heap:saturation
+        expr: sag_um_server_memory_heap_usage_bytes{job="um"} / sag_um_server_memory_heap_max_bytes{job="um"}
+      - record: gauge:um_direct:saturation
+        expr: sag_um_server_memory_direct_usage_bytes{job="um"} / sag_um_server_memory_direct_max_bytes{job="um"}
+      - record: gauge:um_disk:saturation
+        expr: sag_um_server_disk_usage_bytes{job="um"} / sag_um_server_disk_total_bytes{job="um"}
+      - record: gauge:um:stuck_channels
+        expr: |
+          count(
+            (sag_um_topic_noofevents{job="um"} > 0)
+            and on(name) (sag_um_topic_currentconnections{job="um"} == 0)
+          ) or vector(0)
+      - record: gauge:host:cpu_busy
+        expr: 100 * (1 - avg by (instance) (irate(windows_cpu_time_total{mode="idle"}[5m])))
+      - record: gauge:host:mem_used_pct
+        expr: 100 * (1 - windows_memory_available_bytes / windows_memory_physical_total_bytes)
+      - record: gauge:host:disk_used_pct
+        expr: 100 * (1 - windows_logical_disk_free_bytes / windows_logical_disk_size_bytes)
+
+  # ------------------------------------------------------------------ #
+  # Reachability alerts                                                 #
+  # ------------------------------------------------------------------ #
+  - name: gauge_up_alerts
+    rules:
+      - alert: GaugeIntegrationServerDown
+        expr: up{job="is"} == 0
+        for: 2m
+        labels: { severity: critical, product: integration-server }
+        annotations:
+          summary: "Integration Server target {{ $labels.instance }} is down"
+          description: "Prometheus cannot scrape the IS JMX exporter (is_instance={{ $labels.is_instance }}) for 2m - IS or its JMX agent may be down."
+      - alert: GaugeUniversalMessagingDown
+        expr: up{job="um"} == 0
+        for: 2m
+        labels: { severity: critical, product: universal-messaging }
+        annotations:
+          summary: "Universal Messaging target is down"
+          description: "Prometheus cannot scrape the UM exporter (:9200) for 2m."
+      - alert: GaugeWindowsHostDown
+        expr: up{job="windows"} == 0
+        for: 2m
+        labels: { severity: critical, product: windows-host }
+        annotations:
+          summary: "windows_exporter target is down"
+          description: "Prometheus cannot scrape windows_exporter (:9182) for 2m - the host or the exporter service may be down."
+      - alert: GaugeExporterCollectorFailing
+        expr: windows_exporter_collector_success == 0
+        for: 10m
+        labels: { severity: warning, product: windows-host }
+        annotations:
+          summary: "windows_exporter collector {{ $labels.collector }} is failing"
+          description: "The {{ $labels.collector }} collector has returned failures for 10m - metrics from it are missing."
+
+  # ------------------------------------------------------------------ #
+  # Saturation / capacity alerts                                        #
+  # ------------------------------------------------------------------ #
+  - name: gauge_saturation_alerts
+    rules:
+      - alert: GaugeISHeapHigh
+        expr: gauge:is_heap:saturation > 0.90
+        for: 10m
+        labels: { severity: warning, product: integration-server }
+        annotations:
+          summary: "IS heap on {{ $labels.is_instance }} >= 90% ({{ $value | humanizePercentage }})"
+          description: "JVM heap used/max has been >= 90% for 10m - risk of GC thrash / OutOfMemory. Check the IS - JVM dashboard."
+      - alert: GaugeUMHeapHigh
+        expr: gauge:um_heap:saturation > 0.90
+        for: 10m
+        labels: { severity: warning, product: universal-messaging }
+        annotations:
+          summary: "UM heap >= 90% ({{ $value | humanizePercentage }})"
+          description: "UM JVM heap has been >= 90% for 10m."
+      - alert: GaugeUMDiskHigh
+        expr: gauge:um_disk:saturation > 0.85
+        for: 10m
+        labels: { severity: warning, product: universal-messaging }
+        annotations:
+          summary: "UM store disk >= 85% ({{ $value | humanizePercentage }})"
+          description: "UM disk (durable message store) has been >= 85% for 10m - investigate backlog / retention before it fills."
+      - alert: GaugeHostCPUHigh
+        expr: gauge:host:cpu_busy > 90
+        for: 15m
+        labels: { severity: warning, product: windows-host }
+        annotations:
+          summary: "Host CPU >= 90% for 15m ({{ $value | printf \"%.0f\" }}%)"
+          description: "Sustained high CPU on {{ $labels.instance }}. Check the Java processes row on the Windows Host dashboard."
+      - alert: GaugeHostMemoryHigh
+        expr: gauge:host:mem_used_pct > 90
+        for: 15m
+        labels: { severity: warning, product: windows-host }
+        annotations:
+          summary: "Host memory >= 90% for 15m ({{ $value | printf \"%.0f\" }}%)"
+          description: "Physical memory usage sustained >= 90% on {{ $labels.instance }}."
+      - alert: GaugeHostDiskHigh
+        expr: gauge:host:disk_used_pct > 90
+        for: 10m
+        labels: { severity: warning, product: windows-host }
+        annotations:
+          summary: "Disk {{ $labels.volume }} >= 90% full ({{ $value | printf \"%.0f\" }}%)"
+          description: "Volume {{ $labels.volume }} on {{ $labels.instance }} has been >= 90% full for 10m."
+
+  # ------------------------------------------------------------------ #
+  # Messaging + service alerts                                          #
+  # ------------------------------------------------------------------ #
+  - name: gauge_messaging_alerts
+    rules:
+      - alert: GaugeUMChannelNoConsumer
+        expr: |
+          (sag_um_topic_noofevents{job="um"} > 0)
+          and on(name) (sag_um_topic_currentconnections{job="um"} == 0)
+        for: 5m
+        labels: { severity: warning, product: universal-messaging }
+        annotations:
+          summary: "UM channel {{ $labels.name }} has queued events but no consumer"
+          description: "{{ $value }} events are queued on {{ $labels.name }} with zero connected consumers - a subscriber/trigger has likely detached (silent-failure risk)."
+      - alert: GaugeWindowsServiceNotRunning
+        expr: windows_service_state{state="running"} == 0
+        for: 5m
+        labels: { severity: warning, product: windows-host }
+        annotations:
+          summary: "Windows service '{{ $labels.name }}' is not running"
+          description: "A monitored Windows service (see --collector.service.include) has not been in the 'running' state for 5m."

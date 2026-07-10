@@ -1,0 +1,114 @@
+# ============================================================================
+# Gauge (Linux) - recording + alerting rules for the central Windows Prometheus.
+# Host signals from node_* ; IS from sag_is_* OR jvm_* (path-agnostic) ; UM from
+# sag_um_*. Thresholds are starting points - tune to your environment.
+# ============================================================================
+groups:
+  - name: gauge_recording
+    interval: 30s
+    rules:
+      - record: gauge:is_heap:saturation
+        # Path-agnostic: `or` yields whichever IS family is scraped (native sag_ or JMX).
+        expr: |
+          (sag_is_used_memory_bytes{job="is"} / sag_is_max_memory_bytes{job="is"})
+          or
+          (jvm_memory_used_bytes{job="is", area="heap"} / jvm_memory_max_bytes{job="is", area="heap"})
+      - record: gauge:um_heap:saturation
+        expr: sag_um_server_memory_heap_usage_bytes{job="um"} / sag_um_server_memory_heap_max_bytes{job="um"}
+      - record: gauge:um_disk:saturation
+        expr: sag_um_server_disk_usage_bytes{job="um"} / sag_um_server_disk_total_bytes{job="um"}
+      - record: gauge:um:stuck_channels
+        expr: |
+          count(
+            (sag_um_topic_noofevents{job="um"} > 0)
+            and on(name) (sag_um_topic_currentconnections{job="um"} == 0)
+          ) or vector(0)
+      - record: gauge:host:cpu_busy
+        expr: 100 * (1 - avg by (host) (rate(node_cpu_seconds_total{mode="idle"}[5m])))
+      - record: gauge:host:mem_used_pct
+        expr: 100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+      - record: gauge:host:fs_used_pct
+        expr: |
+          100 * (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs"}
+                     / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs"})
+
+  - name: gauge_up_alerts
+    rules:
+      - alert: GaugeIntegrationServerDown
+        expr: up{job="is"} == 0
+        for: 2m
+        labels: { severity: critical, product: integration-server }
+        annotations:
+          summary: "Integration Server {{ $labels.instance }} (host {{ $labels.host }}) is down"
+          description: "Prometheus cannot scrape the IS metrics endpoint for 2m."
+      - alert: GaugeUniversalMessagingDown
+        expr: up{job="um"} == 0
+        for: 2m
+        labels: { severity: critical, product: universal-messaging }
+        annotations:
+          summary: "Universal Messaging (host {{ $labels.host }}) is down"
+          description: "Prometheus cannot scrape the UM exporter (:9200) for 2m."
+      - alert: GaugeNodeExporterDown
+        expr: up{job="node"} == 0
+        for: 2m
+        labels: { severity: warning, product: linux-host }
+        annotations:
+          summary: "node_exporter on {{ $labels.host }} is down"
+          description: "Host metrics for {{ $labels.host }} are missing - the host or node_exporter may be down."
+
+  - name: gauge_saturation_alerts
+    rules:
+      - alert: GaugeISHeapHigh
+        expr: gauge:is_heap:saturation > 0.90
+        for: 10m
+        labels: { severity: warning, product: integration-server }
+        annotations:
+          summary: "IS heap on {{ $labels.host }}/{{ $labels.is_instance }} >= 90% ({{ $value | humanizePercentage }})"
+          description: "JVM heap used/max >= 90% for 10m - risk of GC thrash / OOM."
+      - alert: GaugeUMHeapHigh
+        expr: gauge:um_heap:saturation > 0.90
+        for: 10m
+        labels: { severity: warning, product: universal-messaging }
+        annotations:
+          summary: "UM heap >= 90% ({{ $value | humanizePercentage }})"
+          description: "UM JVM heap >= 90% for 10m."
+      - alert: GaugeUMDiskHigh
+        expr: gauge:um_disk:saturation > 0.85
+        for: 10m
+        labels: { severity: warning, product: universal-messaging }
+        annotations:
+          summary: "UM store disk >= 85% ({{ $value | humanizePercentage }})"
+          description: "UM durable-store disk >= 85% for 10m - check backlog / retention."
+      - alert: GaugeHostCPUHigh
+        expr: gauge:host:cpu_busy > 90
+        for: 15m
+        labels: { severity: warning, product: linux-host }
+        annotations:
+          summary: "Host {{ $labels.host }} CPU >= 90% for 15m ({{ $value | printf \"%.0f\" }}%)"
+          description: "Sustained high CPU. Check per-process CPU on the host."
+      - alert: GaugeHostMemoryHigh
+        expr: gauge:host:mem_used_pct > 90
+        for: 15m
+        labels: { severity: warning, product: linux-host }
+        annotations:
+          summary: "Host {{ $labels.host }} memory >= 90% for 15m ({{ $value | printf \"%.0f\" }}%)"
+          description: "Available memory sustained < 10%."
+      - alert: GaugeHostDiskHigh
+        expr: gauge:host:fs_used_pct > 90
+        for: 10m
+        labels: { severity: warning, product: linux-host }
+        annotations:
+          summary: "{{ $labels.host }} {{ $labels.mountpoint }} >= 90% full ({{ $value | printf \"%.0f\" }}%)"
+          description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.host }} >= 90% for 10m."
+
+  - name: gauge_messaging_alerts
+    rules:
+      - alert: GaugeUMChannelNoConsumer
+        expr: |
+          (sag_um_topic_noofevents{job="um"} > 0)
+          and on(name) (sag_um_topic_currentconnections{job="um"} == 0)
+        for: 5m
+        labels: { severity: warning, product: universal-messaging }
+        annotations:
+          summary: "UM channel {{ $labels.name }} has queued events but no consumer"
+          description: "{{ $value }} events queued on {{ $labels.name }} with zero consumers - a subscriber/trigger has likely detached."

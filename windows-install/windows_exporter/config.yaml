@@ -1,0 +1,13 @@
+# windows_exporter config - copy to C:\ProgramData\windows_exporter\config.yaml
+# (referenced by the MSI CONFIG_FILE property). Pin windows_exporter v0.31.7.
+collectors:
+  enabled: cpu,logical_disk,memory,net,os,system,service,process,tcp,time
+collector:
+  process:
+    # Only Java processes (the IS/UM JVMs). process is high-cardinality - keep it filtered.
+    include: "(java|jvm).*"
+  service:
+    # Only the webMethods Windows services. Edit to match your service names.
+    include: "(?i).*(Integration Server|Universal Messaging).*"
+web:
+  listen-address: ":9182"
